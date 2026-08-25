@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="#1a5276"/>
+  <path d="M32 10 C 42 24, 50 32, 50 42 a 18 18 0 1 1 -36 0 C 14 32, 22 24, 32 10 Z"
+        fill="#5dade2"/>
+  <path d="M18 46 q 7 -6 14 0 t 14 0" stroke="#ffffff" stroke-width="3.5"
+        fill="none" stroke-linecap="round"/>
+  <text x="32" y="30" font-family="Arial, Helvetica, sans-serif" font-size="13"
+        font-weight="bold" fill="#ffffff" text-anchor="middle">CN</text>
+</svg>
