@@ -205,7 +205,10 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             "HydroCN is free and open source (GPL). Source and issue "
             "tracker: https://github.com/mf4633/hydrocn-qgis\n"
             "From the maker of HydroComplete, browser-based stormwater "
-            "design tools: https://hydrocomplete.com"
+            "design tools: https://hydrocomplete.com\n"
+            "Saved you an afternoon? Buy me a coffee: "
+            "https://buy.stripe.com/14A3cudxo91z1qo0OHdAk00"
+            "?client_reference_id=hydrocn-plugin"
         )
 
     def helpUrl(self):

@@ -131,6 +131,9 @@ civil engineers.
 - Source & issues: https://github.com/mf4633/hydrocn-qgis
 - HydroComplete: https://hydrocomplete.com
 
+HydroCN is free. If it saved you an afternoon of GIS drudgery, you can
+[buy me a coffee](https://buy.stripe.com/14A3cudxo91z1qo0OHdAk00?client_reference_id=hydrocn-qgis).
+
 ## License
 
 GPL-2.0-or-later (QGIS plugin requirement). See `hydrocn/LICENSE`.
