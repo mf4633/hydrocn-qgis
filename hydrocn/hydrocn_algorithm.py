@@ -198,9 +198,10 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             "attributes, a per-cell CN raster on the NLCD grid, and a "
             "results folder with per-class breakdown CSV, NOAA Atlas 14 "
             "design-storm runoff CSV, and a run summary.\n\n"
-            "Provide either an AOI polygon layer or an extent (the extent "
-            "widget offers 'Use Current Map Canvas Extent'). An internet "
-            "connection is required unless you supply your own NLCD raster."
+            "Provide an AOI polygon layer or an extent; with both left "
+            "empty, the current map canvas extent is used automatically. "
+            "An internet connection is required unless you supply your "
+            "own NLCD raster."
         )
 
     def initAlgorithm(self, config=None):
@@ -209,7 +210,7 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             [QgsProcessing.TypeVectorPolygon], optional=True))
         self.addParameter(QgsProcessingParameterExtent(
             self.EXTENT,
-            self.tr("Or: extent (used when no AOI layer is set)"),
+            self.tr("Or: extent (empty = current map canvas extent)"),
             optional=True))
         self.addParameter(QgsProcessingParameterRasterLayer(
             self.NLCD_RASTER,
@@ -275,15 +276,33 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             src_crs = source.sourceCrs()
         else:
             rect = self.parameterAsExtent(parameters, self.EXTENT, context)
-            if rect is None or rect.isEmpty():
-                raise QgsProcessingException(
-                    "Provide an AOI polygon layer or an extent "
-                    "(the extent widget can use the current canvas).")
-            src_crs = self.parameterAsExtentCrs(
-                parameters, self.EXTENT, context)
+            if rect is not None and not rect.isEmpty():
+                src_crs = self.parameterAsExtentCrs(
+                    parameters, self.EXTENT, context)
+                feedback.pushInfo(
+                    f"Using extent AOI in "
+                    f"{src_crs.authid() or 'project CRS'}")
+            else:
+                # No AOI layer and no extent: fall back to the current map
+                # canvas, matching the ArcGIS HydroCN Builder behavior.
+                # iface is None outside the GUI (qgis_process, scripts).
+                try:
+                    from qgis.utils import iface
+                except ImportError:
+                    iface = None
+                canvas = iface.mapCanvas() if iface is not None else None
+                if canvas is None or canvas.extent().isEmpty():
+                    raise QgsProcessingException(
+                        "Provide an AOI polygon layer or an extent. (In "
+                        "the QGIS window, leaving both empty uses the "
+                        "current map canvas extent — but no canvas is "
+                        "available here.)")
+                rect = canvas.extent()
+                src_crs = canvas.mapSettings().destinationCrs()
+                feedback.pushInfo(
+                    f"No AOI or extent given; using current map canvas "
+                    f"extent in {src_crs.authid() or 'project CRS'}")
             aoi = QgsGeometry.fromRect(rect)
-            feedback.pushInfo(
-                f"Using extent AOI in {src_crs.authid() or 'project CRS'}")
 
         if not src_crs.isValid():
             src_crs = crs_4326
