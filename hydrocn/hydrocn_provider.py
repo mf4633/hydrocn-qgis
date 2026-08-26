@@ -15,8 +15,16 @@ from .hydrocn_algorithm import (
 class HydroCNProvider(QgsProcessingProvider):
 
     def loadAlgorithms(self):
-        self.addAlgorithm(CalculateCurveNumberAlgorithm())
-        self.addAlgorithm(ValidateServicesAlgorithm())
+        # Keep strong Python references: on QGIS 3.22-3.24 the registered
+        # instances' Python halves can be garbage-collected after a plugin
+        # unload/reload cycle, leaving zombie algorithms whose id() returns
+        # ":" and which processing.run can no longer find.
+        self._algorithms = [
+            CalculateCurveNumberAlgorithm(),
+            ValidateServicesAlgorithm(),
+        ]
+        for alg in self._algorithms:
+            self.addAlgorithm(alg)
 
     def id(self):
         return "hydrocn"
