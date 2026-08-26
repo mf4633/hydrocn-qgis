@@ -28,6 +28,8 @@ import csv
 import json
 import math
 import ssl
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -107,13 +109,31 @@ _SSL_CTX = ssl.create_default_context()
 _UA = "HydroCN-QGIS/1.0 (+https://hydrocomplete.com)"
 
 
-def http_get(url, params=None, timeout=60):
-    """GET returning raw bytes. Raises urllib.error.* on failure."""
+def http_get(url, params=None, timeout=60, retries=2, backoff=3.0):
+    """GET returning raw bytes. Raises urllib.error.* on failure.
+
+    Transient failures — 5xx responses, timeouts, connection errors —
+    are retried up to `retries` extra times with growing backoff.
+    Federal geodata services shed load with brief 503s routinely, and a
+    momentary hiccup shouldn't abort a multi-minute run. Client errors
+    (4xx) raise immediately.
+    """
     if params:
         url = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
-    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
-        return r.read()
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(
+                req, timeout=timeout, context=_SSL_CTX
+            ) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (500, 502, 503, 504) or attempt >= retries:
+                raise
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt >= retries:
+                raise
+        time.sleep(backoff * (attempt + 1))
 
 
 def http_post_json(url, payload, timeout=30):

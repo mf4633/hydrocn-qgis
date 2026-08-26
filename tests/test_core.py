@@ -274,6 +274,87 @@ def test_wkt_too_few_points():
     assert core._wkt_from_points([(0, 0), (1, 1)]) is None
 
 
+# --- http_get retry ----------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _with_fake_urlopen(fn, responses):
+    """Run fn with core's urlopen faked; responses is a list of bytes
+    payloads or exceptions consumed one per call. Returns (result,
+    call_count). Sleeps are also stubbed out."""
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=None, context=None):
+        item = responses[min(calls["n"], len(responses) - 1)]
+        calls["n"] += 1
+        if isinstance(item, Exception):
+            raise item
+        return _FakeResponse(item)
+
+    real_urlopen = core.urllib.request.urlopen
+    real_sleep = core.time.sleep
+    core.urllib.request.urlopen = fake_urlopen
+    core.time.sleep = lambda s: None
+    try:
+        result = fn()
+    finally:
+        core.urllib.request.urlopen = real_urlopen
+        core.time.sleep = real_sleep
+    return result, calls["n"]
+
+
+def _http_error(code):
+    import urllib.error
+    return urllib.error.HTTPError("http://x", code, "err", {}, None)
+
+
+def test_http_get_retries_transient_503():
+    result, n = _with_fake_urlopen(
+        lambda: core.http_get("http://x"),
+        [_http_error(503), _http_error(503), b"ok"])
+    assert result == b"ok" and n == 3
+
+
+def test_http_get_no_retry_on_404():
+    import urllib.error
+    try:
+        _, n = _with_fake_urlopen(
+            lambda: core.http_get("http://x"), [_http_error(404)])
+        assert False, "expected HTTPError"
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
+
+
+def test_http_get_exhausts_retries():
+    import urllib.error
+    try:
+        _with_fake_urlopen(
+            lambda: core.http_get("http://x", retries=2),
+            [_http_error(503)] * 5)
+        assert False, "expected HTTPError"
+    except urllib.error.HTTPError as e:
+        assert e.code == 503
+
+
+def test_http_get_retries_timeout():
+    result, n = _with_fake_urlopen(
+        lambda: core.http_get("http://x"),
+        [TimeoutError("t"), b"ok"])
+    assert result == b"ok" and n == 2
+
+
 # --- misc helpers ------------------------------------------------------------
 
 def test_bbox_area_km2():

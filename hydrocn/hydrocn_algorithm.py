@@ -408,8 +408,17 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             feedback.pushInfo(f"Using provided NLCD raster: {nlcd_src}")
         else:
             nlcd_src = os.path.join(out_folder, f"nlcd_{ts}.tif")
-            core.fetch_mrlc_wms(
-                bbox_buffered, core.NLCD_LAYER, nlcd_src, log, label="NLCD")
+            try:
+                core.fetch_mrlc_wms(
+                    bbox_buffered, core.NLCD_LAYER, nlcd_src, log,
+                    label="NLCD")
+            except Exception as e:
+                # NLCD is the one input the run cannot proceed without.
+                raise QgsProcessingException(
+                    f"NLCD download from MRLC failed after retries: {e}. "
+                    "The MRLC service may be briefly overloaded — try "
+                    "again in a minute, run 'Validate Web Services' to "
+                    "check it, or supply your own NLCD raster.")
 
         clipped_nlcd = os.path.join(out_folder, f"nlcd_clipped_{ts}.tif")
         try:
