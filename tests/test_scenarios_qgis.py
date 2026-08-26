@@ -2,7 +2,7 @@
 
 Requires a QGIS install and network access; run with QGIS's python, e.g.
   "C:\Program Files\QGIS 3.xin\python-qgis.bat" tests/test_scenarios_qgis.py
-(adjust the hardcoded QGIS paths below for your install).
+(works on regular and LTR installs; verified on QGIS 3.24 and 3.44).
 
 Usage: python-qgis.bat test_scenarios.py <scenario> [<scenario> ...]
 Scenarios: load r1 r2 r3 r4 validate
@@ -21,7 +21,11 @@ from qgis.core import QgsApplication  # noqa: E402
 
 qgs = QgsApplication([], False)
 qgs.initQgis()
-sys.path.append(r"C:\Program Files\QGIS 3.24.0\apps\qgis\python\plugins")
+# Processing framework ships inside the running QGIS's prefix — derive
+# the path from it so the harness never mixes framework versions when
+# multiple QGIS installs coexist.
+sys.path.append(os.path.join(QgsApplication.prefixPath(),
+                             "python", "plugins"))
 from processing.core.Processing import Processing  # noqa: E402
 import processing  # noqa: E402
 
