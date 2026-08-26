@@ -110,6 +110,17 @@ python tests/test_core.py
 # or: python -m pytest tests/
 ```
 
+## Part of the HydroComplete ecosystem
+
+HydroCN is one front door to a family of formula-transparent water-resources
+tools by the same author, on whatever platform you already work in:
+
+- **Browser** — [HydroComplete](https://hydrocomplete.com): full stormwater design suite
+- **Civil 3D** — [hydrocomplete-civil3d](https://github.com/mf4633/hydrocomplete-civil3d): hydraulics add-in with a Rust/WASM calc engine
+- **Engines** — [stormsewer](https://github.com/mf4633/stormsewer) (native Rust) · [hydro-tools](https://github.com/mf4633/hydro-tools) (open hydrology primitives)
+- **Research** — [swmm-breach](https://github.com/mf4633/swmm-breach): dam-breach hydrographs for EPA SWMM
+- **Free calculators** — [pe-calc.com](https://pe-calc.com)
+
 ## Author
 
 Built by [Michael Flynn](https://github.com/mf4633), the maker of
