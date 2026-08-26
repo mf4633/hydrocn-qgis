@@ -949,14 +949,12 @@ class ValidateServicesAlgorithm(QgsProcessingAlgorithm):
             "are reachable. Useful after network or firewall changes, "
             "or when a Curve Number run produced warnings.")
 
-    def flags(self):
-        return super().flags() | QgsProcessingAlgorithm.FlagNoThreading
-
     def initAlgorithm(self, config=None):
         pass
 
     def processAlgorithm(self, parameters, context, feedback):
-        results = core.run_service_probe(FeedbackLog(feedback))
+        results = core.run_service_probe(
+            FeedbackLog(feedback), cancel_check=feedback.isCanceled)
         failed = [name for name, status in results
                   if status.startswith("FAIL")]
         return {"OK": len(results) - len(failed), "FAILED": len(failed)}

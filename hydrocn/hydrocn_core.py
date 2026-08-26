@@ -498,7 +498,7 @@ def fetch_mrlc_wms(bbox_wgs84, layer, out_tif, log, label="MRLC"):
 
 # --- NOAA Atlas 14 -----------------------------------------------------------
 
-def fetch_noaa_atlas14_pfds(lat, lon, log):
+def fetch_noaa_atlas14_pfds(lat, lon, log, retries=2):
     """Fetch NOAA Atlas 14 PFDS point estimate (mean) for a lat/lon.
 
     Returns {duration_label: {return_period_yr (int): depth_in}}, or None
@@ -512,9 +512,8 @@ def fetch_noaa_atlas14_pfds(lat, lon, log):
         "series": "pds",
     }
     try:
-        text = http_get(NOAA_PFDS_URL, params=params, timeout=60).decode(
-            "utf-8", errors="replace"
-        )
+        text = http_get(NOAA_PFDS_URL, params=params, timeout=60,
+                        retries=retries).decode("utf-8", errors="replace")
     except Exception as e:
         log.warning(f"NOAA Atlas 14 fetch failed: {e}")
         return None
@@ -872,11 +871,15 @@ def accumulate_per_class_per_polygon(
 
 # --- service probe -----------------------------------------------------------
 
-def run_service_probe(log):
+def run_service_probe(log, cancel_check=None):
     """Hit each external service with a known-good small bbox and report.
 
-    Returns a list of (service_name, status_string). Intended as a
-    30-second diagnostic after system/network changes.
+    Returns a list of (service_name, status_string). Each result is
+    logged the moment its check completes so a caller watching the log
+    sees steady progress. No retries — a diagnostic should report the
+    current truth fast, not paper over it. `cancel_check` (optional
+    zero-arg callable) is consulted between services; when it returns
+    True the probe stops early and reports what it has.
     """
     lat, lon = centroid_wgs84(PROBE_BBOX_WGS84)
     log.info("=== HydroCN service probe ===")
@@ -884,24 +887,40 @@ def run_service_probe(log):
 
     results = []
 
+    def emit(name, status):
+        results.append((name, status))
+        line = f"  {name}: {status}"
+        if (status.startswith("FAIL") or "not advertised" in status
+                or "not parsed" in status):
+            log.warning(line)
+        else:
+            log.info(line)
+
+    def canceled():
+        if cancel_check is not None and cancel_check():
+            log.warning("Probe canceled; reporting services checked so far.")
+            return True
+        return False
+
     # MRLC NLCD + Impervious — one GetCapabilities, check both layers
     try:
         caps = http_get(
             MRLC_WMS_URL,
             params={"SERVICE": "WMS", "REQUEST": "GetCapabilities"},
-            timeout=30,
+            timeout=30, retries=0,
         ).decode("utf-8", errors="replace")
         for name, layer in (
             ("MRLC WMS (land cover)", NLCD_LAYER),
             ("MRLC WMS (impervious)", NLCD_IMPERVIOUS_LAYER),
         ):
             ok = layer.split(":")[-1] in caps
-            results.append(
-                (name, "OK" if ok else f"reachable but layer {layer} not advertised")
-            )
+            emit(name,
+                 "OK" if ok else f"reachable but layer {layer} not advertised")
     except Exception as e:
-        results.append(("MRLC WMS (land cover)", f"FAIL: {e}"))
-        results.append(("MRLC WMS (impervious)", f"FAIL: {e}"))
+        emit("MRLC WMS (land cover)", f"FAIL: {e}")
+        emit("MRLC WMS (impervious)", f"FAIL: {e}")
+    if canceled():
+        return results
 
     # USDA SDA REST
     try:
@@ -910,27 +929,27 @@ def run_service_probe(log):
             {"query": "SELECT TOP 1 mukey FROM mapunit", "format": "JSON"},
         )
         rows = j.get("Table") or []
-        results.append((
-            "USDA SDA REST",
-            "OK" if rows else f"reachable but empty response: {str(j)[:120]}",
-        ))
+        emit("USDA SDA REST",
+             "OK" if rows else f"reachable but empty response: {str(j)[:120]}")
     except Exception as e:
-        results.append(("USDA SDA REST", f"FAIL: {e}"))
+        emit("USDA SDA REST", f"FAIL: {e}")
+    if canceled():
+        return results
 
     # USDA SDA WFS — note: this server 400s a VERSION=1.0.0 GetCapabilities
     # even though VERSION=1.0.0 GetFeature works; probe with 1.1.0.
     try:
         caps = http_get(
             f"{SDA_WFS_URL}?SERVICE=WFS&VERSION=1.1.0&REQUEST=GetCapabilities",
-            timeout=30,
+            timeout=30, retries=0,
         ).decode("utf-8", errors="replace")
-        results.append((
-            "USDA SDA WFS",
-            "OK" if "mapunitpoly" in caps
-            else "reachable but mapunitpoly not advertised",
-        ))
+        emit("USDA SDA WFS",
+             "OK" if "mapunitpoly" in caps
+             else "reachable but mapunitpoly not advertised")
     except Exception as e:
-        results.append(("USDA SDA WFS", f"FAIL: {e}"))
+        emit("USDA SDA WFS", f"FAIL: {e}")
+    if canceled():
+        return results
 
     # State DEM ImageServers (NC / IL)
     state_probe_boxes = [
@@ -953,55 +972,43 @@ def run_service_probe(log):
                         "pixelType": "F32",
                         "f": "image",
                     },
-                    timeout=60,
+                    timeout=30, retries=0,
                 )
                 ok = content[:2] == b"II"  # GeoTIFF little-endian magic
-                results.append((
-                    f"{probe_label} ({src_label})",
-                    "OK" if ok else
-                    f"reachable but not TIFF: "
-                    f"{content[:80].decode('utf-8', errors='replace')}",
-                ))
+                emit(f"{probe_label} ({src_label})",
+                     "OK" if ok else
+                     f"reachable but not TIFF: "
+                     f"{content[:80].decode('utf-8', errors='replace')}")
             except Exception as e:
-                results.append((f"{probe_label} ({src_label})", f"FAIL: {e}"))
+                emit(f"{probe_label} ({src_label})", f"FAIL: {e}")
+        if canceled():
+            return results
 
     # USGS 3DEP
     try:
         j = json.loads(http_get(
-            NED_IMAGESERVER_URL, params={"f": "json"}, timeout=30
+            NED_IMAGESERVER_URL, params={"f": "json"}, timeout=30, retries=0,
         ).decode("utf-8", errors="replace"))
         ok = (j.get("serviceDataType", "").lower().startswith("esriimageservice")
               or "pixelType" in j)
-        results.append((
-            "USGS 3DEP ImageServer",
-            "OK" if ok else f"reachable, info: {str(j)[:120]}",
-        ))
+        emit("USGS 3DEP ImageServer",
+             "OK" if ok else f"reachable, info: {str(j)[:120]}")
     except Exception as e:
-        results.append(("USGS 3DEP ImageServer", f"FAIL: {e}"))
+        emit("USGS 3DEP ImageServer", f"FAIL: {e}")
+    if canceled():
+        return results
 
     # NOAA Atlas 14 PFDS
     try:
-        pfds = fetch_noaa_atlas14_pfds(lat, lon, log)
+        pfds = fetch_noaa_atlas14_pfds(lat, lon, log, retries=0)
         if pfds and "24-hr" in pfds:
             rps = sorted(pfds["24-hr"].keys())
-            results.append((
-                "NOAA Atlas 14 PFDS",
-                f"OK ({len(rps)} return periods, 24-hr {rps[0]}-{rps[-1]} yr)",
-            ))
+            emit("NOAA Atlas 14 PFDS",
+                 f"OK ({len(rps)} return periods, 24-hr {rps[0]}-{rps[-1]} yr)")
         else:
-            results.append(
-                ("NOAA Atlas 14 PFDS", "reachable but no 24-hr row parsed")
-            )
+            emit("NOAA Atlas 14 PFDS", "reachable but no 24-hr row parsed")
     except Exception as e:
-        results.append(("NOAA Atlas 14 PFDS", f"FAIL: {e}"))
+        emit("NOAA Atlas 14 PFDS", f"FAIL: {e}")
 
-    width = max(len(name) for name, _ in results)
-    for name, status in results:
-        line = f"  {name:<{width}}  {status}"
-        if (status.startswith("FAIL") or "not advertised" in status
-                or "not parsed" in status):
-            log.warning(line)
-        else:
-            log.info(line)
     log.info("=== probe complete ===")
     return results
