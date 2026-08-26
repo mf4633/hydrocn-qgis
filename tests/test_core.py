@@ -355,6 +355,51 @@ def test_http_get_retries_timeout():
     assert result == b"ok" and n == 2
 
 
+# --- ESA WorldCover backup ---------------------------------------------------
+
+def test_esa_tiles_single():
+    assert core.esa_worldcover_tiles([-78.650, 35.780, -78.640, 35.790]) \
+        == ["N33W081"]
+
+
+def test_esa_tiles_span_lon():
+    # crosses the -81 tile boundary
+    tiles = core.esa_worldcover_tiles([-81.1, 35.0, -80.9, 35.1])
+    assert tiles == ["N33W084", "N33W081"]
+
+
+def test_esa_tiles_span_lat():
+    tiles = core.esa_worldcover_tiles([-78.65, 35.9, -78.60, 36.1])
+    assert tiles == ["N33W081", "N36W081"]
+
+
+def test_esa_tiles_southern_hemisphere():
+    assert core.esa_worldcover_tiles([12.1, -2.5, 12.2, -2.4]) == ["S03E012"]
+
+
+def test_esa_tiles_boundary_not_duplicated():
+    # xmax exactly on a tile edge must not pull in the next tile
+    assert core.esa_worldcover_tiles([-84.0, 33.0, -81.0, 36.0]) \
+        == ["N33W084"]
+
+
+def test_esa_to_nlcd_mapping_valid():
+    # Every ESA WorldCover class maps to a real NLCD code with a CN row
+    lookup = core.default_cn_lookup("Fair")
+    esa_classes = {10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100}
+    assert set(core.ESA_TO_NLCD) == esa_classes
+    for nlcd_code in core.ESA_TO_NLCD.values():
+        assert nlcd_code in core.NLCD_CLASS_NAMES
+        assert set(lookup[nlcd_code]) == {"A", "B", "C", "D"}
+
+
+def test_esa_water_and_wetland_semantics():
+    assert core.ESA_TO_NLCD[80] == 11    # water -> open water (CN 100)
+    assert core.ESA_TO_NLCD[50] == 23    # built-up -> developed medium
+    assert core.ESA_TO_NLCD[90] == 95    # herbaceous wetland
+    assert core.ESA_TO_NLCD[95] == 90    # mangroves -> woody wetlands
+
+
 # --- misc helpers ------------------------------------------------------------
 
 def test_bbox_area_km2():

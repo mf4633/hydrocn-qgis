@@ -89,6 +89,62 @@ STATE_DEM_REGIONS = {
     },
 }
 
+# Backup land cover: ESA WorldCover 2021 v200 — public cloud-optimized
+# GeoTIFFs on AWS S3, one 3-degree tile per file, no auth. Used when the
+# MRLC WMS is down. Infrastructure-independent from mrlc.gov.
+ESA_WORLDCOVER_S3 = (
+    "https://esa-worldcover.s3.eu-central-1.amazonaws.com/"
+    "v200/2021/map/ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
+)
+
+# ESA WorldCover class -> nearest-equivalent NLCD code, so the TR-55
+# lookup and the rest of the pipeline run unchanged. Approximations:
+# ESA has ONE built-up class (mapped to NLCD 23, developed medium) and
+# no pasture-vs-grassland or developed-intensity distinctions.
+ESA_TO_NLCD = {
+    10: 43,   # Tree cover        -> Mixed Forest
+    20: 52,   # Shrubland         -> Shrub/Scrub
+    30: 71,   # Grassland         -> Grassland/Herbaceous
+    40: 82,   # Cropland          -> Cultivated Crops
+    50: 23,   # Built-up          -> Developed, Medium Intensity
+    60: 31,   # Bare/sparse       -> Barren Land
+    70: 12,   # Snow and ice      -> Perennial Ice/Snow
+    80: 11,   # Permanent water   -> Open Water
+    90: 95,   # Herbaceous wetland-> Emergent Herbaceous Wetlands
+    95: 90,   # Mangroves         -> Woody Wetlands
+    100: 72,  # Moss and lichen   -> Sedge/Herbaceous
+}
+
+
+def esa_worldcover_tiles(bbox_wgs84):
+    """Tile names (e.g. 'N33W081') covering a WGS84 bbox.
+
+    ESA WorldCover tiles are 3x3 degrees, named by their south-west
+    corner: latitude N/S + 2 digits, longitude E/W + 3 digits.
+    """
+    eps = 1e-9
+    lon_min, lat_min, lon_max, lat_max = bbox_wgs84
+    tiles = []
+    lat = math.floor(lat_min / 3.0) * 3
+    while lat <= math.floor((lat_max - eps) / 3.0) * 3:
+        lon = math.floor(lon_min / 3.0) * 3
+        while lon <= math.floor((lon_max - eps) / 3.0) * 3:
+            ns = "N" if lat >= 0 else "S"
+            ew = "E" if lon >= 0 else "W"
+            tiles.append(f"{ns}{abs(lat):02d}{ew}{abs(lon):03d}")
+            lon += 3
+        lat += 3
+    return tiles
+
+
+def http_head_ok(url, timeout=30):
+    """True if a HEAD request to url returns 2xx/3xx."""
+    req = urllib.request.Request(
+        url, method="HEAD", headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
+        return 200 <= r.status < 400
+
+
 NLCD_CLASS_NAMES = {
     11: "Open Water", 12: "Perennial Ice/Snow",
     21: "Developed, Open Space", 22: "Developed, Low Intensity",
@@ -995,6 +1051,17 @@ def run_service_probe(log, cancel_check=None):
              "OK" if ok else f"reachable, info: {str(j)[:120]}")
     except Exception as e:
         emit("USGS 3DEP ImageServer", f"FAIL: {e}")
+    if canceled():
+        return results
+
+    # ESA WorldCover S3 (backup land cover)
+    try:
+        ok = http_head_ok(
+            ESA_WORLDCOVER_S3.format(tile="N33W081"), timeout=30)
+        emit("ESA WorldCover S3 (backup)",
+             "OK" if ok else "reachable but unexpected status")
+    except Exception as e:
+        emit("ESA WorldCover S3 (backup)", f"FAIL: {e}")
     if canceled():
         return results
 

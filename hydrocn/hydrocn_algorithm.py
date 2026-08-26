@@ -254,6 +254,42 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             self.OUTPUT_FOLDER, self.tr("Results folder (CSVs, summary, "
                                         "downloaded rasters)")))
 
+    # --- ESA WorldCover backup land cover -----------------------------------
+
+    def _fetch_esa_worldcover_clipped(self, bbox_wgs84, out_tif, aoi_gpkg,
+                                      feedback):
+        """Windowed read of ESA WorldCover 2021 from its public S3 COGs,
+        warped/clipped onto the working grid and remapped to NLCD codes
+        so the rest of the pipeline runs unchanged."""
+        tiles = core.esa_worldcover_tiles(bbox_wgs84)
+        sources = ["/vsicurl/" + core.ESA_WORLDCOVER_S3.format(tile=t)
+                   for t in tiles]
+        feedback.pushInfo(f"ESA WorldCover tiles: {tiles}")
+        prev = gdal.GetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN")
+        gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+        try:
+            # 30 m cells to match NLCD's working resolution (native 10 m).
+            gdal.Warp(
+                out_tif, sources, dstSRS=WEB_MERCATOR,
+                cutlineDSName=aoi_gpkg, cutlineLayer="aoi",
+                cropToCutline=True, dstNodata=0, resampleAlg="near",
+                xRes=30.0, yRes=30.0, format="GTiff")
+        finally:
+            gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", prev)
+
+        arr, gt, proj = _read_band(out_tif, nodata_to=0, dtype=np.int32)
+        remapped = np.zeros(arr.shape, dtype=np.uint8)
+        for esa_code, nlcd_code in core.ESA_TO_NLCD.items():
+            remapped[arr == esa_code] = nlcd_code
+        _write_gtiff(out_tif, remapped, gt, proj, 0, gdal.GDT_Byte)
+        feedback.pushWarning(
+            "Land cover is ESA WorldCover remapped to NLCD classes — an "
+            "approximation: ESA has a single 'built-up' class (mapped to "
+            "NLCD 23, developed medium) and no developed-intensity or "
+            "pasture/crop condition detail. Verify CNs for developed "
+            "areas before design use.")
+        return out_tif
+
     # --- AOI resolution -----------------------------------------------------
 
     def _resolve_aoi(self, parameters, context, feedback):
@@ -402,9 +438,14 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
         if feedback.isCanceled():
             return {}
 
-        # --- NLCD -----------------------------------------------------------
+        # --- Land cover: user raster, else MRLC NLCD, else ESA backup ------
+        landcover_source = core.NLCD_LAYER
+        clipped_nlcd = os.path.join(out_folder, f"nlcd_clipped_{ts}.tif")
+        clipped_ready = False
+        nlcd_src = None
         if nlcd_layer is not None:
             nlcd_src = nlcd_layer.source()
+            landcover_source = "user raster"
             feedback.pushInfo(f"Using provided NLCD raster: {nlcd_src}")
         else:
             nlcd_src = os.path.join(out_folder, f"nlcd_{ts}.tif")
@@ -413,23 +454,37 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
                     bbox_buffered, core.NLCD_LAYER, nlcd_src, log,
                     label="NLCD")
             except Exception as e:
-                # NLCD is the one input the run cannot proceed without.
-                raise QgsProcessingException(
-                    f"NLCD download from MRLC failed after retries: {e}. "
-                    "The MRLC service may be briefly overloaded — try "
-                    "again in a minute, run 'Validate Web Services' to "
-                    "check it, or supply your own NLCD raster.")
+                feedback.pushWarning(
+                    f"NLCD download from MRLC failed after retries: {e}")
+                feedback.pushWarning(
+                    "Falling back to the backup land cover source: "
+                    "ESA WorldCover 2021 (AWS S3), remapped to NLCD "
+                    "classes.")
+                try:
+                    self._fetch_esa_worldcover_clipped(
+                        bbox_buffered, clipped_nlcd, aoi_gpkg, feedback)
+                    landcover_source = (
+                        "ESA WorldCover 2021 10 m (backup; remapped to "
+                        "NLCD classes)")
+                    clipped_ready = True
+                except Exception as e2:
+                    raise QgsProcessingException(
+                        f"Land cover unavailable. MRLC NLCD failed "
+                        f"({e}); ESA WorldCover backup also failed "
+                        f"({e2}). Run 'Validate Web Services' to check "
+                        "connectivity, try again in a few minutes, or "
+                        "supply your own NLCD raster.")
 
-        clipped_nlcd = os.path.join(out_folder, f"nlcd_clipped_{ts}.tif")
-        try:
-            gdal.Warp(
-                clipped_nlcd, nlcd_src, dstSRS=WEB_MERCATOR,
-                cutlineDSName=aoi_gpkg, cutlineLayer="aoi",
-                cropToCutline=True, dstNodata=0, resampleAlg="near",
-                format="GTiff")
-        except Exception as e:
-            raise QgsProcessingException(
-                f"Could not project/clip the NLCD raster: {e}")
+        if not clipped_ready:
+            try:
+                gdal.Warp(
+                    clipped_nlcd, nlcd_src, dstSRS=WEB_MERCATOR,
+                    cutlineDSName=aoi_gpkg, cutlineLayer="aoi",
+                    cropToCutline=True, dstNodata=0, resampleAlg="near",
+                    format="GTiff")
+            except Exception as e:
+                raise QgsProcessingException(
+                    f"Could not project/clip the NLCD raster: {e}")
 
         feedback.setProgress(20)
         if feedback.isCanceled():
@@ -868,8 +923,7 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             f.write(f"Run date:            "
                     f"{datetime.now().isoformat(timespec='seconds')}\n")
             f.write("\n-- Data sources --\n")
-            f.write(f"NLCD:                "
-                    f"{'user raster' if nlcd_layer else core.NLCD_LAYER}\n")
+            f.write(f"Land cover:          {landcover_source}\n")
             f.write(f"Impervious layer:    "
                     f"{core.NLCD_IMPERVIOUS_LAYER if fetch_impervious else '(not fetched)'}\n")
             f.write("SSURGO source:       SDA WFS\n")

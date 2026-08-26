@@ -19,6 +19,16 @@ matching numbers on the same AOI.
 | NLCD 2021 percent impervious | MRLC WMS |
 | DEM (for slope) | NC OneMap DEM03 / ISGS Illinois LiDAR where applicable, else USGS 3DEP |
 | 24-hr design storm depths | NOAA Atlas 14 PFDS point estimates |
+| Backup land cover | ESA WorldCover 2021 10 m (public AWS S3 COGs) |
+
+**Resilience**: transient service errors (5xx, timeouts) are retried
+automatically with backoff. If the MRLC NLCD service is down entirely,
+the tool falls back to ESA WorldCover 2021 (an infrastructure-independent
+host), remapping its classes to their nearest NLCD equivalents so the
+full pipeline still runs — with a clear warning, since ESA has a single
+"built-up" class (mapped to NLCD developed-medium) and no
+developed-intensity detail. Results under the backup are an
+approximation; rerun against real NLCD for design-grade numbers.
 
 ## Method
 
