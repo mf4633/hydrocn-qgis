@@ -201,8 +201,15 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             "Provide an AOI polygon layer or an extent; with both left "
             "empty, the current map canvas extent is used automatically. "
             "An internet connection is required unless you supply your "
-            "own NLCD raster."
+            "own NLCD raster.\n\n"
+            "HydroCN is free and open source (GPL). Source and issue "
+            "tracker: https://github.com/mf4633/hydrocn-qgis\n"
+            "From the maker of HydroComplete, browser-based stormwater "
+            "design tools: https://hydrocomplete.com"
         )
+
+    def helpUrl(self):
+        return "https://github.com/mf4633/hydrocn-qgis"
 
     def initAlgorithm(self, config=None):
         self.addParameter(QgsProcessingParameterFeatureSource(
@@ -1001,7 +1008,12 @@ class ValidateServicesAlgorithm(QgsProcessingAlgorithm):
             "depends on (MRLC WMS, USDA SDA REST + WFS, state DEM "
             "ImageServers, USGS 3DEP, NOAA Atlas 14) and reports which "
             "are reachable. Useful after network or firewall changes, "
-            "or when a Curve Number run produced warnings.")
+            "or when a Curve Number run produced warnings.\n\n"
+            "Source: https://github.com/mf4633/hydrocn-qgis - "
+            "https://hydrocomplete.com")
+
+    def helpUrl(self):
+        return "https://github.com/mf4633/hydrocn-qgis"
 
     def initAlgorithm(self, config=None):
         pass

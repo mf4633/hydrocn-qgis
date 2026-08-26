@@ -110,6 +110,16 @@ python tests/test_core.py
 # or: python -m pytest tests/
 ```
 
+## Author
+
+Built by [Michael Flynn](https://github.com/mf4633), the maker of
+[HydroComplete](https://hydrocomplete.com) — browser-based stormwater
+design tools (hydrology, hydraulics, detention routing, sediment) for
+civil engineers.
+
+- Source & issues: https://github.com/mf4633/hydrocn-qgis
+- HydroComplete: https://hydrocomplete.com
+
 ## License
 
 GPL-2.0-or-later (QGIS plugin requirement). See `hydrocn/LICENSE`.
