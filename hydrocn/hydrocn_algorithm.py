@@ -638,7 +638,12 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
                         g = g.Buffer(0)
                     try:
                         inter = g.Intersection(target_geom)
-                    except Exception:
+                    except Exception as e:
+                        # A single unusable soil polygon must not abort the
+                        # run, but swallowing it silently hides real data
+                        # problems from anyone reading the log.
+                        log.debug(
+                            f"skipping soil polygon mukey={mukey}: {e}")
                         continue
                     if inter is not None and not inter.IsEmpty() \
                             and inter.GetArea() > 0:

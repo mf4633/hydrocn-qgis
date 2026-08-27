@@ -32,7 +32,14 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
+# defusedxml hardens XML parsing against entity-expansion and quadratic-
+# blowup attacks. QGIS does not guarantee it, so fall back to the stdlib
+# parser, which since Python 3.8 does not expand external entities either.
+# Responses are additionally size-capped in fetch_ssurgo_gml.
+try:
+    from defusedxml import ElementTree as ET
+except ImportError:
+    import xml.etree.ElementTree as ET  # nosec B405 - see note above
 
 
 NLCD_LAYER = "mrlc_download:NLCD_2021_Land_Cover_L48"
@@ -137,11 +144,31 @@ def esa_worldcover_tiles(bbox_wgs84):
     return tiles
 
 
+# Only these schemes may ever be opened. Without this, a URL arriving from
+# configuration or a service response could name file:// (read local files) or
+# a custom handler. Every network helper below gates on it.
+_PERMITTED_URL_SCHEMES = ("https", "http")
+
+
+def _require_permitted_scheme(url):
+    """Raise unless url uses a permitted scheme. Returns the url unchanged."""
+    scheme = urllib.parse.urlparse(url).scheme.lower()
+    if scheme not in _PERMITTED_URL_SCHEMES:
+        raise ValueError(
+            f"refusing to open URL with scheme {scheme!r}; "
+            f"permitted schemes are {_PERMITTED_URL_SCHEMES}"
+        )
+    return url
+
+
 def http_head_ok(url, timeout=30):
     """True if a HEAD request to url returns 2xx/3xx."""
     req = urllib.request.Request(
-        url, method="HEAD", headers={"User-Agent": _UA})
-    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
+        _require_permitted_scheme(url), method="HEAD",
+        headers={"User-Agent": _UA})
+    with urllib.request.urlopen(  # nosec B310 - scheme checked above
+        req, timeout=timeout, context=_SSL_CTX
+    ) as r:
         return 200 <= r.status < 400
 
 
@@ -165,7 +192,7 @@ _SSL_CTX = ssl.create_default_context()
 _UA = "HydroCN-QGIS/1.0 (+https://hydrocomplete.com)"
 
 
-def http_get(url, params=None, timeout=60, retries=2, backoff=3.0):
+def http_get(url, params=None, timeout=60, retries=2, backoff=3.0, max_bytes=None):
     """GET returning raw bytes. Raises urllib.error.* on failure.
 
     Transient failures — 5xx responses, timeouts, connection errors —
@@ -176,13 +203,23 @@ def http_get(url, params=None, timeout=60, retries=2, backoff=3.0):
     """
     if params:
         url = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    req = urllib.request.Request(
+        _require_permitted_scheme(url), headers={"User-Agent": _UA})
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(
+            with urllib.request.urlopen(  # nosec B310 - scheme checked above
                 req, timeout=timeout, context=_SSL_CTX
             ) as r:
-                return r.read()
+                if max_bytes is None:
+                    return r.read()
+                # Read one byte past the ceiling: if it arrives, the body is
+                # over the limit and we stop rather than buffer the rest.
+                data = r.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise ValueError(
+                        f"response from {url} exceeds {max_bytes} bytes"
+                    )
+                return data
         except urllib.error.HTTPError as e:
             if e.code not in (500, 502, 503, 504) or attempt >= retries:
                 raise
@@ -196,10 +233,12 @@ def http_post_json(url, payload, timeout=30):
     """POST a JSON body, return parsed-JSON response."""
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        url, data=body,
+        _require_permitted_scheme(url), data=body,
         headers={"Content-Type": "application/json", "User-Agent": _UA},
     )
-    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
+    with urllib.request.urlopen(  # nosec B310 - scheme checked above
+        req, timeout=timeout, context=_SSL_CTX
+    ) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -247,11 +286,15 @@ def get_hydro_group_from_mukey(mukey, run_state, log):
     if mukey in cache:
         return cache[mukey]
 
+    # nosec B608 - not user input: mukey is rejected above unless it is
+    # entirely digits, so nothing but a numeric literal reaches this string.
+    # SDA's REST endpoint takes SQL as its payload; there is no parameter
+    # binding available.
     sql = (
         "SELECT mu.mukey, compname, comppct_r, hydgrp "
         "FROM component AS c "
         "INNER JOIN mapunit AS mu ON c.mukey = mu.mukey "
-        f"WHERE mu.mukey = '{mukey}' "
+        f"WHERE mu.mukey = '{mukey}' "  # nosec B608 - digits-only, checked above
         "AND c.majcompflag = 'Yes' "
         "ORDER BY c.comppct_r DESC"
     )
@@ -331,6 +374,11 @@ def estimate_hydro_group_from_nlcd(nlcd_code):
     return mapping.get(nlcd_code, "C")
 
 
+# Ceiling on a single SSURGO GML response. Larger than any legitimate
+# mapunitpoly reply for a hand-drawn AOI, small enough to refuse a runaway.
+MAX_GML_BYTES = 64 * 1024 * 1024
+
+
 def fetch_ssurgo_gml(bbox_wgs84, log):
     """Fetch mapunitpoly GML text via the SDA WFS. Raises on total failure."""
     bbox = ",".join(f"{c:.6f}" for c in bbox_wgs84)
@@ -343,7 +391,9 @@ def fetch_ssurgo_gml(bbox_wgs84, log):
     for i, url in enumerate(candidate_urls, 1):
         try:
             log.info(f"SSURGO WFS attempt {i}")
-            text = http_get(url, timeout=60).decode("utf-8", errors="replace")
+            text = http_get(
+                url, timeout=60, max_bytes=MAX_GML_BYTES
+            ).decode("utf-8", errors="replace")
             if len(text) > 1000:
                 return text
             log.info(f"  response only {len(text)} chars; retrying")
@@ -362,7 +412,10 @@ def parse_ssurgo_gml(text):
     gml:featureMember and ms:mapunitpoly containers (first matching
     pattern wins — parsing both would duplicate every polygon).
     """
-    root = ET.fromstring(text)
+    # nosec B314 - defusedxml when available; otherwise the stdlib parser,
+    # which does not expand external entities. Input is size-capped and
+    # comes from a fixed HTTPS USDA endpoint.
+    root = ET.fromstring(text)  # nosec B314
     ns = {
         "gml": "http://www.opengis.net/gml",
         "ms": "http://mapserver.gis.umn.edu/mapserver",
