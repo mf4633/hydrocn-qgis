@@ -9,6 +9,25 @@ email=michaelbflynn@gmail.com
 tracker=https://github.com/mf4633/hydrocn-qgis/issues
 repository=https://github.com/mf4633/hydrocn-qgis
 homepage=https://hydrocomplete.com
+changelog=
+    1.0.1
+    - Hardening only. Curve numbers, runoff depths and every other result are
+      unchanged from 1.0.0; there is no need to re-run past analyses.
+    - Web requests now refuse any URL scheme other than http and https.
+    - SSURGO GML responses are capped at 64 MB, so an unresponsive or
+      misbehaving service cannot exhaust memory mid-run.
+    - XML parsing uses defusedxml when your QGIS environment provides it.
+    - A soil polygon that cannot be intersected with the area of interest is
+      now reported in the log instead of being skipped silently.
+    1.0.0
+    - First release. Composite SCS curve number for an area of interest from
+      SSURGO soils, NLCD 2021 land cover and imperviousness, and DEM slope for
+      dual hydrologic groups (A/D, B/D, C/D), with NOAA Atlas 14 design-storm
+      runoff depths and volumes.
+    - Outputs a CN polygon layer, a per-cell CN raster on the NLCD grid, and
+      CSV summaries.
+    - Falls back to ESA WorldCover when the federal land-cover service is
+      unavailable. CONUS only; requires an internet connection.
 category=Analysis
 icon=icon.svg
 hasProcessingProvider=yes
