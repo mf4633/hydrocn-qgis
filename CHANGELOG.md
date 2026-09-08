@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2
+
+Same code as 1.0.1. New version number only: plugins.qgis.org already
+recorded 1.0.1 as an unapproved upload, so a unique version is required
+to submit the public package.
+
 ## 1.0.1
 
 Hardening only. Curve numbers, runoff depths and every other result are
