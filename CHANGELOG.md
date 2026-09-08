@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3
+
+Homepage in `metadata.txt` now points at this README
+(`https://github.com/mf4633/hydrocn-qgis`) instead of hydrocomplete.com.
+QGIS plugin review requires the homepage to describe plugin usage; the
+README is that page (install, tools, inputs, outputs, limits). No
+calculation changes.
+
 ## 1.0.2
 
 Same code as 1.0.1. New version number only: plugins.qgis.org already

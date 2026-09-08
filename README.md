@@ -9,6 +9,23 @@ Ported from the author's **HydroCN Builder** toolbox for ArcGIS Pro — same
 data sources, same TR-55 tables, same math, so the two tools produce
 matching numbers on the same AOI.
 
+## Usage
+
+1. Install from the QGIS Plugin Manager (search **HydroCN**), or from a
+   release zip: *Plugins → Manage and Install Plugins → Install from ZIP*.
+2. Open the **Processing Toolbox** → **HydroCN → Hydrology**.
+3. Run **Validate Web Services** if you want a 30-second check that the
+   federal endpoints are reachable.
+4. Run **Calculate Curve Number (SSURGO + NLCD)**. Give it an AOI polygon
+   layer **or** an extent (the extent widget offers "Use Current Map Canvas
+   Extent"). If both are left empty, the current map canvas is used.
+5. Results land in the project: a CN polygon layer, a per-cell CN raster,
+   and a results folder with per-class breakdown CSV, NOAA Atlas 14 runoff
+   CSV, and a run summary.
+
+No extra Python packages. Stock QGIS 3.22+ is enough. An internet
+connection is required unless you supply your own NLCD raster.
+
 ## What it fetches (CONUS only, all free federal/state services)
 
 | Data | Source |
@@ -65,26 +82,11 @@ approximation; rerun against real NLCD for design-grade numbers.
   summary text file, plus the downloaded DEM / slope / NLCD / impervious /
   SSURGO artifacts for inspection.
 
-## Install
+## Install from source
 
-From a release zip: QGIS → *Plugins → Manage and Install Plugins →
-Install from ZIP* → pick `hydrocn.zip`.
-
-From source: copy the `hydrocn/` folder into your QGIS profile's
-`python/plugins/` directory and enable the plugin.
-
-The tools appear in the **Processing Toolbox** under
-**HydroCN → Hydrology**:
-
-- *Calculate Curve Number (SSURGO + NLCD)* — the main tool. Provide an
-  AOI polygon layer **or** an extent (the extent widget offers "Use
-  Current Map Canvas Extent").
-- *Validate Web Services* — 30-second reachability probe of every
-  external service; run it first if a CN run produced warnings.
-
-No dependencies beyond a stock QGIS 3.22+ install (GDAL and numpy ship
-with QGIS). An internet connection is required unless you supply your own
-NLCD raster.
+Copy the `hydrocn/` folder into your QGIS profile's `python/plugins/`
+directory and enable the plugin. Release zips and Plugin Manager install
+are covered under **Usage** above.
 
 ## Limits and honesty notes
 
