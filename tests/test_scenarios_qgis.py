@@ -5,7 +5,7 @@ Requires a QGIS install and network access; run with QGIS's python, e.g.
 (works on regular and LTR installs; verified on QGIS 3.24 and 3.44).
 
 Usage: python-qgis.bat test_scenarios.py <scenario> [<scenario> ...]
-Scenarios: load r1 r2 r3 r4 validate
+Scenarios: load r1 r2 r3 r4 r5 r6 r7 r8 r9 validate
 Prints CHECK lines; final line SCENARIOS: <n passed>/<n total checks>.
 """
 import csv
@@ -214,7 +214,7 @@ def scenario_r3():
         "AOI": None, "EXTENT": "-87.000,-86.990,44.000,44.010 [EPSG:4326]",
         "NLCD_RASTER": None, "CN_LOOKUP": None, "SLOPE_THRESHOLD": 2.0,
         "AMC": 1, "HYDRO_CONDITION": 1, "CUSTOM_STORMS": "2.5",
-        "FETCH_IMPERVIOUS": False, "FETCH_DEM": False,
+        "FETCH_IMPERVIOUS": False, "FETCH_DEM": False, "SAVE_DEM": False,
         "OUTPUT": os.path.join(folder, "cn.gpkg"),
         "OUTPUT_CN_RASTER": os.path.join(folder, "cn.tif"),
         "OUTPUT_FOLDER": folder,
@@ -241,7 +241,7 @@ def scenario_r4():
         "NLCD_RASTER": None, "CN_LOOKUP": None, "SLOPE_THRESHOLD": 2.0,
         "AMC": 0,  # I
         "HYDRO_CONDITION": 0, "CUSTOM_STORMS": "",
-        "FETCH_IMPERVIOUS": False, "FETCH_DEM": False,
+        "FETCH_IMPERVIOUS": False, "FETCH_DEM": False, "SAVE_DEM": False,
         "OUTPUT": os.path.join(folder, "cn.gpkg"),
         "OUTPUT_CN_RASTER": os.path.join(folder, "cn.tif"),
         "OUTPUT_FOLDER": folder,
@@ -268,7 +268,7 @@ def scenario_r5():
         "AOI": None, "EXTENT": "-78.650,-78.640,35.780,35.790 [EPSG:4326]",
         "NLCD_RASTER": nlcd_path, "CN_LOOKUP": None, "SLOPE_THRESHOLD": 2.0,
         "AMC": 0, "HYDRO_CONDITION": 0, "CUSTOM_STORMS": "",
-        "FETCH_IMPERVIOUS": False, "FETCH_DEM": False,
+        "FETCH_IMPERVIOUS": False, "FETCH_DEM": False, "SAVE_DEM": False,
         "OUTPUT": os.path.join(folder, "cn.gpkg"),
         "OUTPUT_CN_RASTER": os.path.join(folder, "cn.tif"),
         "OUTPUT_FOLDER": folder,
@@ -286,6 +286,133 @@ def scenario_r5():
           f"r5={ {k: round(v, 2) for k, v in r5_cn.items()} }")
 
 
+# Small Piedmont NC extent (mostly forest + pasture) for the outage and
+# DEM-checkbox scenarios.
+PIEDMONT_EXTENT = "-81.570,-81.560,35.430,35.440 [EPSG:4326]"
+
+
+def _simulate_ssurgo_down():
+    """Make the SDA WFS look down, deterministically, whatever USDA's real
+    state is. Returns a restore() callable."""
+    from hydrocn import hydrocn_core as core
+    orig = core.fetch_ssurgo_gml
+
+    def down(bbox, log):
+        raise core.SsurgoServiceUnavailable(
+            "USDA Soil Data Access (SSURGO) is not responding "
+            "(simulated HTTP Error 502: Bad Gateway).")
+    core.fetch_ssurgo_gml = down
+    return lambda: setattr(core, "fetch_ssurgo_gml", orig)
+
+
+def _piedmont_params(folder, **over):
+    params = {
+        "AOI": None, "EXTENT": PIEDMONT_EXTENT,
+        "NLCD_RASTER": None, "CN_LOOKUP": None, "SLOPE_THRESHOLD": 2.0,
+        "AMC": 1, "HYDRO_CONDITION": 1, "CUSTOM_STORMS": "3.7",
+        "FETCH_IMPERVIOUS": False, "FETCH_DEM": True,
+        "OUTPUT": os.path.join(folder, "cn.gpkg"),
+        "OUTPUT_CN_RASTER": os.path.join(folder, "cn.tif"),
+        "OUTPUT_DEM": os.path.join(folder, "dem_out.tif"),
+        "OUTPUT_SLOPE": os.path.join(folder, "slope_out.tif"),
+        "OUTPUT_FOLDER": folder,
+    }
+    params.update(over)
+    return params
+
+
+def scenario_r6():
+    """SSURGO down + default settings: the run must STOP with a clear
+    message instead of producing a guessed CN."""
+    folder = os.path.join(OUT, "r6")
+    restore = _simulate_ssurgo_down()
+    try:
+        try:
+            run_alg(_piedmont_params(folder, SAVE_DEM=False))
+            check("r6: SSURGO-down run stops by default", False,
+                  "run completed")
+        except Exception as e:
+            msg = str(e)
+            check("r6: SSURGO-down run stops by default",
+                  "SSURGO" in msg and "screening" in msg, msg[:160])
+    finally:
+        restore()
+
+
+def scenario_r7():
+    """SSURGO down + opt-in: completes, labelled SCREENING everywhere,
+    forest estimated as HSG B (not A), and DEM/slope downloaded."""
+    folder = os.path.join(OUT, "r7")
+    restore = _simulate_ssurgo_down()
+    try:
+        res = run_alg(_piedmont_params(
+            folder, ALLOW_ESTIMATED_HSG=True, SAVE_DEM=True))
+    finally:
+        restore()
+    summary = read_summary(folder)
+    check("r7: summary flagged SCREENING ONLY",
+          "SCREENING ONLY - NOT FOR DESIGN" in summary)
+    check("r7: summary SSURGO source says UNAVAILABLE",
+          "SSURGO source:       UNAVAILABLE" in summary)
+    check("r7: composite CN line flagged",
+          "(SCREENING - estimated HSG)" in summary)
+    bd = sorted(f for f in os.listdir(folder)
+                if f.startswith("cn_breakdown_"))[-1]
+    with open(os.path.join(folder, bd), newline="") as f:
+        rows = list(csv.DictReader(f))
+    forest = [r for r in rows if r["NLCD_Code"] in ("41", "42", "43")]
+    check("r7: forest present in Piedmont extent", bool(forest))
+    check("r7: forest estimated as HSG B, not A",
+          forest and all(r["HydroGroup"] == "B" for r in forest),
+          str([(r["NLCD_Code"], r["HydroGroup"], r["Weighted_CN"])
+               for r in forest]))
+    check("r7: DEM returned and on disk",
+          os.path.isfile(res.get("OUTPUT_DEM") or ""), str(res.get(
+              "OUTPUT_DEM")))
+    check("r7: slope returned and on disk",
+          os.path.isfile(res.get("OUTPUT_SLOPE") or ""), str(res.get(
+              "OUTPUT_SLOPE")))
+    check("r7: DEM.tif kept in results folder",
+          os.path.isfile(os.path.join(folder, "DEM.tif")))
+
+
+def scenario_r8():
+    """Download-DEM unchecked: DEM still fetched for slope, but no DEM /
+    slope outputs are returned or kept."""
+    folder = os.path.join(OUT, "r8")
+    for name in ("DEM.tif", "Slope.tif", "dem_out.tif", "slope_out.tif"):
+        if os.path.exists(os.path.join(folder, name)):
+            os.remove(os.path.join(folder, name))
+    restore = _simulate_ssurgo_down()
+    try:
+        res = run_alg(_piedmont_params(
+            folder, ALLOW_ESTIMATED_HSG=True, SAVE_DEM=False))
+    finally:
+        restore()
+    check("r8: no DEM output returned", "OUTPUT_DEM" not in res, str(res))
+    check("r8: no slope output returned", "OUTPUT_SLOPE" not in res)
+    check("r8: no DEM.tif / Slope.tif kept",
+          not os.path.exists(os.path.join(folder, "DEM.tif"))
+          and not os.path.exists(os.path.join(folder, "Slope.tif")))
+    summary = read_summary(folder)
+    check("r8: slope still computed (DEM source recorded)",
+          "DEM source:          (unavailable)" not in summary)
+
+
+def scenario_r9():
+    """Fetch DEM unchecked but Download DEM checked: DEM is fetched."""
+    folder = os.path.join(OUT, "r9")
+    restore = _simulate_ssurgo_down()
+    try:
+        res = run_alg(_piedmont_params(
+            folder, ALLOW_ESTIMATED_HSG=True, FETCH_DEM=False,
+            SAVE_DEM=True))
+    finally:
+        restore()
+    check("r9: Download DEM forces the fetch",
+          os.path.isfile(res.get("OUTPUT_DEM") or ""), str(res))
+
+
 def scenario_validate():
     res = processing.run("hydrocn:validateservices", {})
     check("validate: alg runs and reports counts",
@@ -294,7 +421,8 @@ def scenario_validate():
 
 SCENARIOS = {"load": scenario_load, "r1": scenario_r1, "r2": scenario_r2,
              "r3": scenario_r3, "r4": scenario_r4, "r5": scenario_r5,
-             "validate": scenario_validate}
+             "r6": scenario_r6, "r7": scenario_r7, "r8": scenario_r8,
+             "r9": scenario_r9, "validate": scenario_validate}
 
 names = sys.argv[1:] or list(SCENARIOS)
 for name in names:

@@ -78,6 +78,12 @@ approximation; rerun against real NLCD for design-grade numbers.
   weighted `CN` / `CN_Adj`, and area.
 - **CN raster** — per-cell CN on the NLCD grid (preserves the full
   NLCD x soil granularity the polygon layer dissolves away).
+- **DEM** — the elevation raster used for the run (`DEM.tif` in the
+  results folder, and a DEM output layer). Controlled by the **Download
+  DEM and slope rasters** checkbox (on by default); checking it fetches
+  the DEM even if slope is off.
+- **Slope DEM** — Horn 3x3 slope in percent rise (`Slope.tif` in the
+  results folder, and a Slope DEM output layer). Same checkbox.
 - **Results folder** — per-class breakdown CSV, runoff summary CSV, run
   summary text file, plus the downloaded DEM / slope / NLCD / impervious /
   SSURGO artifacts for inspection.
@@ -98,6 +104,12 @@ are covered under **Usage** above.
 - SSURGO hydrologic groups use the dominant component; minor components
   are ignored. Where SDA has no group, an NLCD-based estimate fills in
   and the polygon's `HydroGroupRaw` is blank.
+- If USDA Soil Data Access is down, the run stops by default rather
+  than guess soils. Tick **If USDA SSURGO is down, continue with soil
+  groups estimated from land cover** for a screening-only result; the
+  run summary is then marked SCREENING ONLY and its SSURGO source reads
+  UNAVAILABLE. Land-cover soil groups are coarse (forest, pasture and
+  open space are taken as B), so don't use such a run for design.
 - This tool automates lookups an engineer would otherwise do by hand.
   It does not replace engineering judgment; verify results before use
   in design or permitting.
@@ -134,7 +146,7 @@ civil engineers.
 - HydroComplete: https://hydrocomplete.com
 
 HydroCN is free. If it saved you an afternoon of GIS drudgery, you can
-[buy me a coffee](https://buy.stripe.com/14A3cudxo91z1qo0OHdAk00?client_reference_id=hydrocn-qgis).
+[leave a $0.99 tip](https://buy.stripe.com/14A3cudxo91z1qo0OHdAk00?client_reference_id=hydrocn-qgis).
 
 ## License
 

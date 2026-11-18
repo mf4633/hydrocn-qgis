@@ -1,3 +1,4 @@
 __pycache__/
 *.pyc
 dist/
+tests/hydrocn_scenarios/

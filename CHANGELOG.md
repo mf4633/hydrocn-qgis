@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.4
+
+- **Download DEM checkbox.** New option "Download DEM and slope rasters
+  (save and add to map)", on by default. When checked, the run saves
+  `DEM.tif` and `Slope.tif` (percent rise) in the results folder and
+  returns them as the **DEM** and **Slope DEM** outputs so QGIS loads
+  them with the CN layers. Checking it fetches the DEM even if "Fetch DEM
+  and compute slope" is off; unchecking it still lets slope be computed
+  without keeping the rasters.
+- **SSURGO outages no longer pass silently.** When USDA Soil Data Access
+  is down, the run now stops with a clear message by default. A new
+  checkbox, "If USDA SSURGO is down, continue with soil groups estimated
+  from land cover (screening only)", lets it finish; the run summary,
+  log and composite-CN line are then marked SCREENING ONLY and the
+  summary's SSURGO source reads UNAVAILABLE. (Before, the summary still
+  said "SSURGO source: SDA WFS".) An AOI that SSURGO simply doesn't
+  cover, such as open water, still falls back as before.
+- **Estimated soil groups for forest changed from A to B** (and barren
+  from A to B). Only runs that fall back to land-cover soil groups are
+  affected: forest went from CN 30-36 to CN 55-66, which removes a large
+  low bias in forested watersheds.
+- The polygon output is now titled "CN polygons" rather than "CN
+  polygons (SSURGO mapunits)", since it is a single AOI polygon when no
+  SSURGO is used.
+
 ## 1.0.3
 
 Homepage in `metadata.txt` now points at this README

@@ -15,6 +15,7 @@ Licensed GPL-2.0-or-later.
 import csv
 import math
 import os
+import shutil
 from datetime import datetime
 
 import numpy as np
@@ -142,6 +143,33 @@ def _write_gtiff(path, arr, geotransform, projection_wkt, nodata,
     return path
 
 
+def _publish_raster(src, *dests):
+    """Copy a finished GeoTIFF to each destination that is a different path.
+
+    Returns the first destination written, or src when every dest matches src.
+    Missing or empty destinations are skipped.
+    """
+    if not src or not os.path.isfile(src):
+        return None
+    primary = None
+    src_abs = os.path.abspath(src)
+    for dest in dests:
+        if not dest or not str(dest).strip():
+            continue
+        dest = os.path.normpath(str(dest).strip())
+        if os.path.abspath(dest) == src_abs:
+            primary = primary or dest
+            continue
+        folder = os.path.dirname(dest)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        if os.path.exists(dest):
+            os.remove(dest)
+        shutil.copyfile(src, dest)
+        primary = primary or dest
+    return primary or src
+
+
 class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
     """Area-weighted SCS Curve Number from SSURGO + NLCD, fetched live."""
 
@@ -155,8 +183,12 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
     CUSTOM_STORMS = "CUSTOM_STORMS"
     FETCH_IMPERVIOUS = "FETCH_IMPERVIOUS"
     FETCH_DEM = "FETCH_DEM"
+    SAVE_DEM = "SAVE_DEM"
+    ALLOW_ESTIMATED_HSG = "ALLOW_ESTIMATED_HSG"
     OUTPUT = "OUTPUT"
     OUTPUT_CN_RASTER = "OUTPUT_CN_RASTER"
+    OUTPUT_DEM = "OUTPUT_DEM"
+    OUTPUT_SLOPE = "OUTPUT_SLOPE"
     OUTPUT_FOLDER = "OUTPUT_FOLDER"
 
     AMC_OPTIONS = ["I (dry)", "II (average)", "III (wet)"]
@@ -194,10 +226,15 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             "built-in TR-55 tables (selectable hydrologic condition) or "
             "your own CSV keyed by NLCD code with columns "
             "NLCD_Code,A,B,C,D.\n\n"
+            "If USDA SSURGO is down the run stops by default; tick the "
+            "estimated-soil-groups box to continue with a screening-only "
+            "result that is labelled as such.\n\n"
             "Outputs: a polygon layer of SSURGO mapunits with weighted CN "
-            "attributes, a per-cell CN raster on the NLCD grid, and a "
-            "results folder with per-class breakdown CSV, NOAA Atlas 14 "
-            "design-storm runoff CSV, and a run summary.\n\n"
+            "attributes, a per-cell CN raster on the NLCD grid, the fetched "
+            "DEM and the slope DEM (percent rise), and a results folder with "
+            "per-class breakdown CSV, NOAA Atlas 14 design-storm runoff CSV, "
+            "and a run summary. The results folder also keeps DEM.tif and "
+            "Slope.tif.\n\n"
             "Provide an AOI polygon layer or an extent; with both left "
             "empty, the current map canvas extent is used automatically. "
             "An internet connection is required unless you supply your "
@@ -206,7 +243,7 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             "tracker: https://github.com/mf4633/hydrocn-qgis\n"
             "From the maker of HydroComplete, browser-based stormwater "
             "design tools: https://hydrocomplete.com\n"
-            "Saved you an afternoon? Buy me a coffee: "
+            "Saved you an afternoon? Leave a $0.99 tip: "
             "https://buy.stripe.com/14A3cudxo91z1qo0OHdAk00"
             "?client_reference_id=hydrocn-plugin"
         )
@@ -255,11 +292,25 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             self.FETCH_DEM,
             self.tr("Fetch DEM and compute slope (resolves dual HSGs)"),
             defaultValue=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.SAVE_DEM,
+            self.tr("Download DEM and slope rasters (save and add to map)"),
+            defaultValue=True))
+        self.addParameter(QgsProcessingParameterBoolean(
+            self.ALLOW_ESTIMATED_HSG,
+            self.tr("If USDA SSURGO is down, continue with soil groups "
+                    "estimated from land cover (screening only)"),
+            defaultValue=False))
         self.addParameter(QgsProcessingParameterFeatureSink(
-            self.OUTPUT, self.tr("CN polygons (SSURGO mapunits)"),
+            self.OUTPUT, self.tr("CN polygons"),
             QgsProcessing.TypeVectorPolygon))
         self.addParameter(QgsProcessingParameterRasterDestination(
             self.OUTPUT_CN_RASTER, self.tr("CN raster")))
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.OUTPUT_DEM, self.tr("DEM"), optional=True))
+        self.addParameter(QgsProcessingParameterRasterDestination(
+            self.OUTPUT_SLOPE, self.tr("Slope DEM (percent rise)"),
+            optional=True))
         self.addParameter(QgsProcessingParameterFolderDestination(
             self.OUTPUT_FOLDER, self.tr("Results folder (CSVs, summary, "
                                         "downloaded rasters)")))
@@ -373,6 +424,10 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
         os.makedirs(out_folder, exist_ok=True)
         cn_raster_path = self.parameterAsOutputLayer(
             parameters, self.OUTPUT_CN_RASTER, context)
+        dem_dest = self.parameterAsOutputLayer(
+            parameters, self.OUTPUT_DEM, context) or ""
+        slope_dest = self.parameterAsOutputLayer(
+            parameters, self.OUTPUT_SLOPE, context) or ""
 
         slope_threshold = self.parameterAsDouble(
             parameters, self.SLOPE_THRESHOLD, context)
@@ -386,6 +441,15 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             parameters, self.FETCH_IMPERVIOUS, context)
         fetch_dem = self.parameterAsBoolean(
             parameters, self.FETCH_DEM, context)
+        save_dem = self.parameterAsBoolean(
+            parameters, self.SAVE_DEM, context)
+        if save_dem and not fetch_dem:
+            feedback.pushInfo(
+                "Download DEM is checked, so the DEM is fetched even though "
+                "'Fetch DEM and compute slope' is off.")
+            fetch_dem = True
+        allow_estimated_hsg = self.parameterAsBoolean(
+            parameters, self.ALLOW_ESTIMATED_HSG, context)
         cn_lookup_path = self.parameterAsString(
             parameters, self.CN_LOOKUP, context)
         nlcd_layer = self.parameterAsRasterLayer(
@@ -543,6 +607,16 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
                         f"Slope computation failed: {e}. Dual-HSG soils "
                         "will default to the undrained letter.")
                     slope_tif = None
+                saved_dem = save_dem and _publish_raster(
+                    dem_tif, dem_dest, os.path.join(out_folder, "DEM.tif"))
+                if saved_dem:
+                    feedback.pushInfo(f"Saved DEM: {saved_dem}")
+                if slope_tif and save_dem:
+                    saved_slope = _publish_raster(
+                        slope_tif, slope_dest,
+                        os.path.join(out_folder, "Slope.tif"))
+                    if saved_slope:
+                        feedback.pushInfo(f"Saved slope DEM: {saved_slope}")
         else:
             feedback.pushInfo(
                 "DEM fetch disabled; dual-HSG soils will use the "
@@ -616,6 +690,11 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
         # 3857 with OGR, and rasterize a sequential OID onto the NLCD grid
         # so the classifier can work entirely in numpy.
         clipped_soils = []  # [(ogr geom 3857, mukey, musym)]
+        # How the HSGs were obtained, for the log, summary and report:
+        #   "ssurgo"    - SDA answered (individual misses still fall back)
+        #   "no_cover"  - SDA answered with no mapunits (open water etc.)
+        #   "estimated" - SDA was down; HSGs guessed from land cover
+        soils_status = "ssurgo"
         try:
             gml_text = core.fetch_ssurgo_gml(bbox_buffered, log)
             gml_path = os.path.join(out_folder, f"ssurgo_{ts}.gml")
@@ -660,10 +739,25 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
                 if clipped_soils:
                     feedback.pushInfo(
                         f"Buffered clip yielded {len(clipped_soils)} polygons")
+        except core.SsurgoServiceUnavailable as e:
+            if not allow_estimated_hsg:
+                raise QgsProcessingException(
+                    f"{e} Without SSURGO the hydrologic soil groups would be "
+                    "guessed from land cover, and the composite CN is not "
+                    "reliable for design. Check https://websoilsurvey."
+                    "nrcs.usda.gov and rerun when it loads, or tick 'If "
+                    "USDA SSURGO is down, continue with soil groups "
+                    "estimated from land cover' for a screening-only run.")
+            feedback.pushWarning(
+                f"{e} Continuing with hydrologic soil groups ESTIMATED "
+                "from land cover (screening only; not for design).")
+            soils_status = "estimated"
+            clipped_soils = []
         except Exception as e:
             feedback.pushWarning(
-                f"SSURGO unavailable: {e}. Falling back to NLCD-derived "
-                "hydrologic groups for the whole AOI.")
+                f"SSURGO: {e} Using NLCD-derived hydrologic groups for "
+                "the whole AOI.")
+            soils_status = "no_cover"
             clipped_soils = []
 
         has_soils = bool(clipped_soils)
@@ -714,6 +808,22 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
                     attrs["MUKEY"], run_state, log)
                 if raw:
                     oid_to_raw_hsg[oid] = raw
+                if run_state.get("sda_unavailable") \
+                        and not allow_estimated_hsg:
+                    raise QgsProcessingException(
+                        "USDA Soil Data Access (SSURGO) stopped answering "
+                        "hydrologic-group lookups partway through the run, "
+                        "so some soil groups would be guessed from land "
+                        "cover. Rerun when https://websoilsurvey.nrcs.usda."
+                        "gov loads, or tick 'If USDA SSURGO is down, "
+                        "continue with soil groups estimated from land "
+                        "cover' for a screening-only run.")
+            if run_state.get("sda_unavailable"):
+                soils_status = "estimated"
+                feedback.pushWarning(
+                    "SSURGO hydrologic-group lookups failed for some "
+                    "mapunits; those use groups ESTIMATED from land cover "
+                    "(screening only; not for design).")
 
         feedback.setProgress(70)
 
@@ -856,6 +966,10 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             f"Area-weighted CN (AMC-II): {final_cn:.2f}"
             + (f"   CN (AMC-{amc}): {final_cn_adj:.2f}"
                if amc != "II" else ""))
+        if soils_status == "estimated":
+            feedback.pushWarning(
+                "SCREENING ONLY: this CN uses soil groups estimated from "
+                "land cover because USDA SSURGO was unavailable.")
         if total_area == 0:
             feedback.pushWarning(
                 "No valid CN cells were produced. Check that the AOI "
@@ -935,13 +1049,26 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
         with open(summary_file, "w") as f:
             f.write("HydroCN for QGIS - Run Summary\n")
             f.write("==============================\n")
+            if soils_status == "estimated":
+                f.write(
+                    "*** SCREENING ONLY - NOT FOR DESIGN ***\n"
+                    "USDA SSURGO was unavailable. Hydrologic soil groups "
+                    "were\nestimated from land cover, so the composite CN "
+                    "and runoff\nbelow are approximate. Rerun when SSURGO "
+                    "is back.\n")
             f.write(f"Run date:            "
                     f"{datetime.now().isoformat(timespec='seconds')}\n")
             f.write("\n-- Data sources --\n")
             f.write(f"Land cover:          {landcover_source}\n")
             f.write(f"Impervious layer:    "
                     f"{core.NLCD_IMPERVIOUS_LAYER if fetch_impervious else '(not fetched)'}\n")
-            f.write("SSURGO source:       SDA WFS\n")
+            f.write("SSURGO source:       " + {
+                "ssurgo": "USDA SDA (WFS polygons + REST hydgrp)",
+                "no_cover": "no SSURGO mapunits in AOI; HSG from land "
+                            "cover",
+                "estimated": "UNAVAILABLE (USDA SDA down); HSG ESTIMATED "
+                             "from land cover",
+            }[soils_status] + "\n")
             f.write(f"DEM source:          "
                     f"{dem_source_label or '(unavailable)'}\n")
             f.write(f"Slope threshold:     {slope_threshold} %\n")
@@ -951,7 +1078,9 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
             f.write(f"Area:                {total_area:,.2f} m^2  "
                     f"({total_area_ac:,.2f} ac, "
                     f"{total_area_sqmi:.3f} sq mi)\n")
-            f.write(f"Composite CN (II):   {final_cn:.2f}\n")
+            f.write(f"Composite CN (II):   {final_cn:.2f}"
+                    + ("  (SCREENING - estimated HSG)"
+                       if soils_status == "estimated" else "") + "\n")
             f.write(f"Hydro condition:     {condition}\n")
             f.write(f"AMC requested:       {amc}\n")
             f.write(f"Composite CN (adj):  {final_cn_adj:.2f}  "
@@ -984,9 +1113,24 @@ class CalculateCurveNumberAlgorithm(QgsProcessingAlgorithm):
         feedback.pushInfo(f"Summary: {summary_file}")
         feedback.setProgress(100)
 
-        return {self.OUTPUT: dest_id,
-                self.OUTPUT_CN_RASTER: cn_raster_path,
-                self.OUTPUT_FOLDER: out_folder}
+        result = {self.OUTPUT: dest_id,
+                  self.OUTPUT_CN_RASTER: cn_raster_path,
+                  self.OUTPUT_FOLDER: out_folder}
+        dem_saved = os.path.join(out_folder, "DEM.tif")
+        slope_saved = os.path.join(out_folder, "Slope.tif")
+        if not save_dem:
+            pass
+        elif dem_dest and os.path.isfile(dem_dest):
+            result[self.OUTPUT_DEM] = dem_dest
+        elif os.path.isfile(dem_saved):
+            result[self.OUTPUT_DEM] = dem_saved
+        if not save_dem:
+            pass
+        elif slope_dest and os.path.isfile(slope_dest):
+            result[self.OUTPUT_SLOPE] = slope_dest
+        elif os.path.isfile(slope_saved):
+            result[self.OUTPUT_SLOPE] = slope_saved
+        return result
 
 
 class ValidateServicesAlgorithm(QgsProcessingAlgorithm):

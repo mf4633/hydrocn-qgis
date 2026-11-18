@@ -301,6 +301,9 @@ def get_hydro_group_from_mukey(mukey, run_state, log):
     try:
         data = http_post_json(SDA_REST_URL, {"query": sql, "format": "JSON"})
     except Exception as e:  # network / JSON — degrade to NLCD-based estimate
+        # Distinct from "MUKEY has no hydgrp": the service itself failed,
+        # so every HSG from here on is a guess. Callers check this flag.
+        run_state["sda_unavailable"] = True
         if not run_state.get("sda_error_logged"):
             log.info(f"SSURGO SDA lookup unavailable: {e}")
             log.info("Falling back to NLCD-based hydrologic group estimates.")
@@ -360,12 +363,18 @@ def resolve_hydro_group(raw, slope_pct, threshold_pct):
 
 
 def estimate_hydro_group_from_nlcd(nlcd_code):
-    """Coarse hydrologic group when SSURGO lookup fails."""
+    """Coarse hydrologic group when SSURGO lookup fails (screening only).
+
+    Land cover says nothing reliable about soil texture, so this leans on
+    B (the most common HSG by area in CONUS) rather than A. Forest used to
+    map to A here, which put woods at CN 30-36 and biased any forested
+    watershed's composite CN far low.
+    """
     mapping = {
         11: "D", 12: "D",
         21: "B", 22: "C", 23: "C", 24: "D",
-        31: "A",
-        41: "A", 42: "A", 43: "A",
+        31: "B",
+        41: "B", 42: "B", 43: "B",
         51: "B", 52: "B",
         71: "B", 72: "B", 73: "B", 74: "B",
         81: "B", 82: "B",
@@ -379,8 +388,20 @@ def estimate_hydro_group_from_nlcd(nlcd_code):
 MAX_GML_BYTES = 64 * 1024 * 1024
 
 
+class SsurgoServiceUnavailable(RuntimeError):
+    """The SDA WFS never answered (HTTP error / timeout on every attempt).
+
+    Distinct from a plain RuntimeError, which means the service answered
+    but returned no mapunits (AOI outside SSURGO coverage, e.g. open water).
+    """
+
+
 def fetch_ssurgo_gml(bbox_wgs84, log):
-    """Fetch mapunitpoly GML text via the SDA WFS. Raises on total failure."""
+    """Fetch mapunitpoly GML text via the SDA WFS.
+
+    Raises SsurgoServiceUnavailable if no attempt got a response, or
+    RuntimeError if the service answered with no usable features.
+    """
     bbox = ",".join(f"{c:.6f}" for c in bbox_wgs84)
     candidate_urls = [
         f"{SDA_WFS_URL}?SERVICE=WFS&VERSION=1.0.0&REQUEST=GetFeature"
@@ -388,20 +409,28 @@ def fetch_ssurgo_gml(bbox_wgs84, log):
         f"{SDA_WFS_URL}?SERVICE=WFS&VERSION=1.1.0&REQUEST=GetFeature"
         f"&TYPENAME=mapunitpoly&OUTPUTFORMAT=GML2&BBOX={bbox}",
     ]
+    got_response = False
+    last_error = None
     for i, url in enumerate(candidate_urls, 1):
         try:
             log.info(f"SSURGO WFS attempt {i}")
             text = http_get(
                 url, timeout=60, max_bytes=MAX_GML_BYTES
             ).decode("utf-8", errors="replace")
+            got_response = True
             if len(text) > 1000:
                 return text
             log.info(f"  response only {len(text)} chars; retrying")
         except Exception as e:
+            last_error = e
             log.info(f"  failed: {e}")
+    if not got_response:
+        raise SsurgoServiceUnavailable(
+            f"USDA Soil Data Access (SSURGO) is not responding ({last_error})."
+        )
     raise RuntimeError(
-        "SSURGO WFS unavailable. The service may be down, or the AOI may "
-        "fall outside SSURGO coverage."
+        "SSURGO returned no soil mapunits for this AOI (outside SSURGO "
+        "coverage, e.g. open water)."
     )
 
 
